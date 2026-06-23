@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Alerts — LLM Health Monitor</title>
+  <link rel="stylesheet" href="/static/style.css?v=2">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>LLM Health Monitor</h1>
+      <span class="last-updated" id="last-updated">Loading...</span>
+    </header>
+
+    <nav>
+      <a href="/">Dashboard</a>
+      <a href="/alerts" class="active">Alerts</a>
+      <a href="/logs">Logs</a>
+    </nav>
+
+    <!-- Active Alerts -->
+    <div class="card">
+      <div class="card-header">
+        <h2>Active Alerts</h2>
+        <span class="summary" id="active-alerts-summary"></span>
+      </div>
+      <div id="active-alerts-container">
+        <div class="empty-state">Loading...</div>
+      </div>
+    </div>
+
+    <!-- Alert History -->
+    <div class="card">
+      <h2>Alert History (Last 50)</h2>
+      <div id="alert-history-container">
+        <div class="empty-state">Loading...</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Timezone offset from server config (e.g. +8)
+    const TZ_OFFSET = {{ tz_offset | tojson }};
+
+    function formatDate(iso) {
+      if (!iso) return '—';
+      const utc = iso.replace(' ', 'T') + 'Z';
+      const d = new Date(utc);
+      const shifted = new Date(d.getTime() + TZ_OFFSET * 3600000);
+      const yyyy = shifted.getUTCFullYear();
+      const mm = String(shifted.getUTCMonth() + 1).padStart(2, '0');
+      const dd = String(shifted.getUTCDate()).padStart(2, '0');
+      const hh = String(shifted.getUTCHours()).padStart(2, '0');
+      const min = String(shifted.getUTCMinutes()).padStart(2, '0');
+      const ss = String(shifted.getUTCSeconds()).padStart(2, '0');
+      return `${yyyy}/${mm}/${dd} ${hh}:${min}:${ss}`;
+    }
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function renderAlerts(alerts, containerId, showResolved) {
+      const container = document.getElementById(containerId);
+      if (!alerts || alerts.length === 0) {
+        container.innerHTML = '<div class="empty-state">No alerts.</div>';
+        return;
+      }
+
+      const items = alerts.map(a => {
+        const isResolved = !!a.resolved_at;
+        const resolvedBadge = isResolved
+          ? '<span class="badge ok" style="margin-left:0.5rem;font-size:0.65rem;">RESOLVED</span>'
+          : '<span class="badge fail" style="margin-left:0.5rem;font-size:0.65rem;">ACTIVE</span>';
+        return `
+          <div class="alert-detail">
+            <div class="meta">
+              <div>
+                <span class="endpoint">${escapeHtml(a.endpoint_name)}</span>
+                <span style="font-size:0.75rem;color:var(--text-muted);margin-left:0.3rem;" title="monitor-id">(${escapeHtml(a.monitor_id || '—')})</span>
+                ${resolvedBadge}
+              </div>
+              <span class="type">${escapeHtml(a.alert_type)}</span>
+              <span class="message">${escapeHtml(a.message)}</span>
+            </div>
+            <div class="times">
+              <div>Sent: ${formatDate(a.sent_at)}</div>
+              ${isResolved ? `<div class="resolved">Resolved: ${formatDate(a.resolved_at)}</div>` : ''}
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      container.innerHTML = items;
+    }
+
+    async function loadActiveAlerts() {
+      const res = await fetch('/api/alerts?active_only=true');
+      const data = await res.json();
+      const count = (data.alerts || []).length;
+      document.getElementById('active-alerts-summary').textContent = `count: ${count}`;
+      renderAlerts(data.alerts, 'active-alerts-container', false);
+    }
+
+    async function loadAlertHistory() {
+      const res = await fetch('/api/alerts');
+      const data = await res.json();
+      renderAlerts(data.alerts, 'alert-history-container', true);
+    }
+
+    async function refreshAll() {
+      try {
+        await Promise.all([loadActiveAlerts(), loadAlertHistory()]);
+        const now = new Date();
+        const shifted = new Date(now.getTime() + TZ_OFFSET * 3600000);
+        const hh = String(shifted.getUTCHours()).padStart(2, '0');
+        const min = String(shifted.getUTCMinutes()).padStart(2, '0');
+        const ss = String(shifted.getUTCSeconds()).padStart(2, '0');
+        document.getElementById('last-updated').textContent = `Updated: ${hh}:${min}:${ss}`;
+      } catch (err) {
+        console.error('Refresh failed:', err);
+        document.getElementById('last-updated').textContent = 'Refresh failed';
+      }
+    }
+
+    refreshAll();
+    setInterval(refreshAll, 5000);
+  </script>
+</body>
+</html>

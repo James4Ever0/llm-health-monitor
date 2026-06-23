@@ -1,0 +1,1 @@
+treat each request as is right now, do not aggregate concurrent requests, make sure they are async is just enough. do not do anything excessive. treat those simutaneous requests as if they are sending in different times.

@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Logs — LLM Health Monitor</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>LLM Health Monitor</h1>
+      <span class="last-updated" id="last-updated">Loading...</span>
+    </header>
+
+    <nav>
+      <a href="/">Dashboard</a>
+      <a href="/alerts">Alerts</a>
+      <a href="/logs" class="active">Logs</a>
+    </nav>
+
+    <div class="card">
+      <div class="log-toolbar">
+        <span>Connection Debug Log</span>
+        <span class="log-count" id="log-count">0 lines</span>
+      </div>
+      <div class="log-terminal" id="log-terminal">
+        <div class="empty-state">Waiting for data...</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Timezone offset from server config (e.g. +8)
+    const TZ_OFFSET = {{ tz_offset | tojson }};
+    const MAX_LINES = 100;
+    const POLL_MS = 2000;
+
+    const terminal = document.getElementById('log-terminal');
+    const countEl = document.getElementById('log-count');
+    const seenIds = new Set();
+    let lines = [];
+
+    function fmtDate(iso) {
+      if (!iso) return '—';
+      const utc = iso.replace(' ', 'T') + 'Z';
+      const d = new Date(utc);
+      const shifted = new Date(d.getTime() + TZ_OFFSET * 3600000);
+      const yyyy = shifted.getUTCFullYear();
+      const mm = String(shifted.getUTCMonth() + 1).padStart(2, '0');
+      const dd = String(shifted.getUTCDate()).padStart(2, '0');
+      const hh = String(shifted.getUTCHours()).padStart(2, '0');
+      const min = String(shifted.getUTCMinutes()).padStart(2, '0');
+      const ss = String(shifted.getUTCSeconds()).padStart(2, '0');
+      return `${yyyy}/${mm}/${dd} ${hh}:${min}:${ss}`;
+    }
+
+    function fmtMs(ms) {
+      if (ms === null || ms === undefined) return '—';
+      return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms/1000).toFixed(1)}s`;
+    }
+
+    function renderLine(chk) {
+      const ov = chk.check_override || {};
+      const prompt = ov.prompt_request !== undefined ? ov.prompt_request : 'default';
+      const expected = ov.prompt_expected !== undefined ? ov.prompt_expected : 'default';
+      const temp = ov.temperature !== undefined ? ov.temperature : 'default';
+      const topP = ov.top_p !== undefined ? ov.top_p : 'default';
+      const topK = ov.top_k !== undefined ? ov.top_k : 'default';
+      const maxTok = ov.max_tokens !== undefined ? ov.max_tokens : 'default';
+      const assertResp = ov.assert_response !== undefined ? ov.assert_response : 'default';
+
+      return {
+        id: chk.id,
+        monitor_id: chk.monitor_id,
+        ts: fmtDate(chk.timestamp),
+        name: chk.endpoint_name,
+        url: chk.base_url,
+        model: chk.model,
+        prompt: prompt,
+        expected: expected,
+        params: `temp=${temp} top_p=${topP} top_k=${topK} max_tokens=${maxTok} assert=${assertResp}`,
+        status: chk.status,
+        latency: fmtMs(chk.latency_ms),
+        response: (chk.response_text || ''),
+        requestBody: chk.request_body || '',
+        responseBody: chk.response_body || '',
+      };
+    }
+
+    function updateTerminal() {
+      if (lines.length > MAX_LINES) {
+        lines = lines.slice(lines.length - MAX_LINES);
+      }
+
+      if (lines.length === 0) {
+        terminal.innerHTML = '<div class="empty-state">Waiting for data...</div>';
+        countEl.textContent = '0 lines';
+        return;
+      }
+
+      terminal.innerHTML = lines.map(line =>
+        `<div class="log-block">
+          <div class="log-line">
+            <span class="log-ts">[${line.ts}]</span>
+            <span class="log-name">${escapeHtml(line.name)}</span>
+            <span class="log-url">${escapeHtml(line.url)}</span>
+            <span class="log-model">${escapeHtml(line.model)}</span>
+            <span class="log-prompt">prompt="${escapeHtml(line.prompt)}"</span>
+            <span class="log-expected">expected="${escapeHtml(line.expected)}"</span>
+            <span class="log-params">${escapeHtml(line.params)}</span>
+            <span class="log-status ${line.status}">${escapeHtml(line.status)}</span>
+            <span class="log-latency">${escapeHtml(line.latency)}</span>
+            <span class="log-response">resp="${escapeHtml(line.response)}"</span>
+          </div>
+          <div class="log-detail">
+            <div class="log-detail-section"><strong>REQUEST</strong> <pre>${escapeHtml(line.requestBody)}</pre></div>
+            <div class="log-detail-section"><strong>RESPONSE</strong> <pre>${escapeHtml(line.responseBody)}</pre></div>
+          </div>
+        </div>`
+      ).join('');
+
+      countEl.textContent = `${lines.length} lines (max ${MAX_LINES})`;
+      terminal.scrollTop = terminal.scrollHeight;
+    }
+
+    async function fetchLogs() {
+      const res = await fetch('/api/logs?limit=200');
+      const data = await res.json();
+      const checks = data.checks || [];
+
+      const newLines = [];
+      for (let i = checks.length - 1; i >= 0; i--) {
+        const chk = checks[i];
+        if (seenIds.has(chk.id)) continue;
+        seenIds.add(chk.id);
+        newLines.push(renderLine(chk));
+      }
+
+      if (newLines.length > 0) {
+        lines.push(...newLines);
+        updateTerminal();
+      }
+
+      const now = new Date();
+      const shifted = new Date(now.getTime() + TZ_OFFSET * 3600000);
+      const hh = String(shifted.getUTCHours()).padStart(2, '0');
+      const min = String(shifted.getUTCMinutes()).padStart(2, '0');
+      const ss = String(shifted.getUTCSeconds()).padStart(2, '0');
+      document.getElementById('last-updated').textContent = `Updated: ${hh}:${min}:${ss}`;
+    }
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    fetchLogs();
+    setInterval(fetchLogs, POLL_MS);
+  </script>
+</body>
+</html>

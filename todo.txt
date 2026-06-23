@@ -1,0 +1,16 @@
+post alert via browser notification firefox/chrome
+
+post alert via email (create a separate email sending service api, then submit some content using http request, on the monitor side just send http request by config)
+
+create pydantic check over config file
+
+---
+
+add random characters as prefix to disable kv cache. format: trace-id: <uuid4> <newline>, specify in global or per model config, config name: random_prefix: true, default to false.
+
+add concurrency param, sending x concurrent requests per check, default to 1 if unset globally, can be set globally or use override config per model endpoint, each check can be independent just like right now, data format the same. config name: concurrency: 1
+
+add success rate to llm alert message, when sending alert message, add success rate of recent 1h, recent 24h along with the alert.
+
+
+

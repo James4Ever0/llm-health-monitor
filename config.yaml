@@ -1,0 +1,143 @@
+endpoints:
+  - monitor-id: "suanli-qwen3.6-abliterated"
+    name: "Qwen3.6 Abliterated"
+    base_url: "http://10.10.11.225:8080/v1"
+    # api_key is optional — omit or leave empty if the endpoint requires no auth.
+    # api_key: "sk-no-key-required"
+    model: "unsloth/Kimi-K2.5-GGUF"
+    endpoint_type: llm
+    enabled: true
+    show: true
+    # Optional: override check params for this endpoint.
+    # Any key omitted falls back to the global `check.llm` defaults below.
+    check_override:
+      prompt_request: "Say hello in one word"
+      prompt_expected: "hello"
+      assert_response: false
+
+  - monitor-id: "suanli-gemma-4"
+    name: "Gemma 4"
+    base_url: "http://10.10.11.225:8081/v1"
+    model: "gemma-4:31b"
+    endpoint_type: llm
+    enabled: true
+    show: true
+    # Uses all defaults from `check.llm:` — no override needed.
+
+  - monitor-id: "ollama-qwen-3.6"
+    name: "Qwen 3.6"
+    base_url: "http://10.10.11.240:11435/v1"
+    model: "qwen3.5:35b"
+    endpoint_type: llm
+    enabled: true
+    show: true
+    check_override:
+      timeout_seconds: 100
+      interval_seconds: 110
+    # Uses all defaults from `check.llm:` — no override needed.
+
+  - monitor-id: "ollama-qwen-3.5"
+    name: "Qwen 3.5 122B"
+    base_url: "http://10.10.11.240:11435/v1"
+    model: "qwen3.5:122b"
+    endpoint_type: llm
+    enabled: true
+    show: true
+    check_override:
+      timeout_seconds: 100
+      interval_seconds: 110
+    # Uses all defaults from `check.llm:` — no override needed.
+
+  - monitor-id: "ollama-qwen-3.5-11434"
+    name: "Qwen 3.5 35B (11434)"
+    base_url: "http://10.10.11.240:11434/v1"
+    model: "qwen3.5:35b"
+    endpoint_type: llm
+    enabled: true
+    show: true
+
+  - monitor-id: "ollama-qwen-3.5-122b-11434"
+    name: "Qwen 3.5 122B (11434)"
+    base_url: "http://10.10.11.240:11434/v1"
+    model: "qwen3.5:122b"
+    endpoint_type: llm
+    enabled: true
+    show: true
+
+  - monitor-id: "suanli-kimi-k2.5"
+    name: "Kimi K2.5"
+    base_url: "http://10.10.11.225:8080/v1"
+    model: "unsloth/Kimi-K2.5"
+    endpoint_type: llm
+    enabled: true
+    show: true
+
+  - monitor-id: "ollama-qwen3-embedding"
+    name: "Qwen3 Embedding 0.6B"
+    base_url: "http://10.10.11.240:11434/v1"
+    model: "qwen3-embedding:0.6b"
+    endpoint_type: embedding
+    enabled: true
+    show: true
+
+  - monitor-id: "ollama-bge-reranker"
+    name: "BGE Reranker v2 m3"
+    base_url: "http://10.10.11.240:8479/v1"
+    model: "bge-reranker-v2-m3"
+    endpoint_type: rerank
+    enabled: true
+    show: true
+
+  - monitor-id: "ollama-qwen2.5vl"
+    name: "Qwen2.5 VL 7B"
+    base_url: "http://10.10.11.240:11434/v1"
+    model: "qwen2.5vl:7b"
+    endpoint_type: llm
+    enabled: true
+    show: true
+
+
+check:
+  llm:
+    prompt_request: "Say 'hello world' in two words"
+    prompt_expected: "hello world"
+    temperature: 0
+    top_p: 1.0
+    top_k: 0        # 0 = disabled / omitted from payload
+    max_tokens: 10
+    assert_response: false
+    timeout_seconds: 10
+    interval_seconds: 30
+    random_prefix: true   # prepend "trace-id: <uuid>\n" to each request to defeat KV cache
+    concurrency: 1         # number of independent requests to fire per check cycle
+
+  embedding:
+    input: "Hello world"
+    expected_dimension: 1536        # optional; null = skip dimension check
+    assert_response: false          # for embedding we validate shape, not text
+    timeout_seconds: 10
+    interval_seconds: 30
+    random_prefix: false            # embedding input is semantically meaningful
+    concurrency: 1
+
+  rerank:
+    query: "What is the capital of France?"
+    documents:
+      - "Paris is the capital of France."
+      - "Berlin is the capital of Germany."
+      - "France is a country in Europe."
+    expected_index: 0               # optional; null = skip top-index check
+    assert_response: false
+    timeout_seconds: 10
+    interval_seconds: 30
+    random_prefix: false
+    concurrency: 1
+
+server:
+  host: "0.0.0.0"
+  port: 9880
+  timezone: "Asia/Shanghai"
+
+alerts:
+  enabled: true
+  ntfy_topic: "nvzVfb3bmlzeLAQP"

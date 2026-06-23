@@ -1,0 +1,465 @@
+/* LLM Health Monitor — Dashboard Styles */
+
+:root {
+  --bg: #0f1115;
+  --surface: #181b21;
+  --surface-hover: #1e222a;
+  --text: #c9d1d9;
+  --text-muted: #8b949e;
+  --border: #30363d;
+  --ok: #3fb950;
+  --ok-bg: rgba(63, 185, 80, 0.12);
+  --fail: #f85149;
+  --fail-bg: rgba(248, 81, 73, 0.12);
+  --warn: #d29922;
+  --warn-bg: rgba(210, 153, 34, 0.12);
+  --accent: #58a6ff;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+  min-height: 100vh;
+}
+
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 2rem 1.5rem;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+header h1 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.last-updated {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+/* Nav */
+nav {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1.5rem;
+}
+
+nav a {
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 0.85rem;
+  font-weight: 500;
+  padding: 0.35rem 0.75rem;
+  border-radius: 6px;
+  transition: all 0.15s ease;
+}
+
+nav a:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+nav a.active {
+  color: var(--accent);
+  background: rgba(88, 166, 255, 0.1);
+}
+
+/* Cards */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1.25rem;
+  margin-bottom: 1.5rem;
+}
+
+.card h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin-bottom: 1rem;
+  color: var(--text);
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.card-header h2 {
+  margin-bottom: 0;
+}
+
+.card-header .summary {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+/* Status Table */
+.status-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.status-table th,
+.status-table td {
+  text-align: left;
+  padding: 0.75rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.status-table th {
+  color: var(--text-muted);
+  font-weight: 500;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.status-table tr:hover td {
+  background: var(--surface-hover);
+}
+
+/* Badges */
+.badge {
+  display: inline-block;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.badge.ok {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+
+.badge.fail {
+  background: var(--fail-bg);
+  color: var(--fail);
+}
+
+.badge.warn {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+/* Uptime bars */
+.uptime-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.uptime-bar .bar-track {
+  flex: 1;
+  height: 6px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.uptime-bar .bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--ok);
+  transition: width 0.3s ease;
+}
+
+.uptime-bar .bar-fill.low {
+  background: var(--fail);
+}
+
+.uptime-bar .bar-fill.medium {
+  background: var(--warn);
+}
+
+.uptime-value {
+  font-size: 0.85rem;
+  font-weight: 600;
+  min-width: 3.5rem;
+  text-align: right;
+}
+
+/* Alerts panel */
+.alert-list {
+  list-style: none;
+}
+
+.alert-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.alert-list li:last-child {
+  border-bottom: none;
+}
+
+.alert-list .alert-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.alert-list .alert-type {
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.alert-list .alert-msg {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.alert-list .alert-time {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* Charts */
+.chart-container {
+  position: relative;
+  width: 100%;
+}
+
+/* Latency */
+.latency {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.latency.slow {
+  color: var(--warn);
+}
+
+/* Empty state */
+.empty-state {
+  text-align: center;
+  padding: 2rem;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+/* Alert detail card */
+.alert-detail {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 1rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.alert-detail:last-child {
+  border-bottom: none;
+}
+
+.alert-detail .meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  flex: 1;
+}
+
+.alert-detail .meta .endpoint {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.alert-detail .meta .type {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.alert-detail .meta .message {
+  font-size: 0.85rem;
+  color: var(--text);
+  margin-top: 0.25rem;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  word-break: break-word;
+}
+
+.alert-detail .times {
+  text-align: right;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  margin-left: 1rem;
+}
+
+.alert-detail .times .resolved {
+  color: var(--ok);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .container {
+    padding: 1rem;
+  }
+
+  header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
+
+  .status-table {
+    font-size: 0.8rem;
+  }
+
+  .status-table th,
+  .status-table td {
+    padding: 0.5rem 0.35rem;
+  }
+
+  .uptime-bar .bar-track {
+    display: none;
+  }
+
+  .alert-detail {
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .alert-detail .times {
+    text-align: left;
+    margin-left: 0;
+  }
+}
+
+/* Terminal / Debug Log */
+.log-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.log-toolbar .log-count {
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+.log-terminal {
+  background: #0a0c10;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.75rem;
+  max-height: 70vh;
+  overflow-y: auto;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+  line-height: 1.6;
+  color: #c9d1d9;
+}
+
+.log-line {
+  white-space: pre-wrap;
+  word-break: break-all;
+  padding: 0.15rem 0;
+  border-bottom: 1px solid rgba(48, 54, 61, 0.5);
+}
+
+.log-line:last-child {
+  border-bottom: none;
+}
+
+.log-line:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.log-ts   { color: #8b949e; }
+.log-name { color: #d2a8ff; font-weight: 600; }
+.log-url  { color: #79c0ff; }
+.log-model{ color: #ffa657; }
+.log-prompt    { color: #7ee787; }
+.log-expected  { color: #7ee787; opacity: 0.8; }
+.log-params    { color: #e3b341; }
+.log-status.ok    { color: #3fb950; font-weight: 600; }
+.log-status.timeout,
+.log-status.error,
+.log-status.unexpected { color: #f85149; font-weight: 600; }
+.log-latency   { color: #79c0ff; }
+.log-response  { color: #a5d6ff; opacity: 0.8; }
+
+.log-terminal .empty-state {
+  font-family: inherit;
+  color: #484f58;
+  padding: 3rem;
+}
+
+/* Log block: summary line + expandable request/response */
+.log-block {
+  border-bottom: 1px solid rgba(48, 54, 61, 0.5);
+  padding: 0.25rem 0;
+}
+
+.log-block:last-child {
+  border-bottom: none;
+}
+
+.log-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0.4rem 0 0.4rem 1.5rem;
+  padding: 0.5rem 0.75rem;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 4px;
+  border-left: 2px solid #30363d;
+}
+
+.log-detail-section {
+  font-size: 0.75rem;
+}
+
+.log-detail-section strong {
+  color: #8b949e;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.log-detail-section pre {
+  margin: 0.25rem 0 0 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: #c9d1d9;
+  font-size: 0.75rem;
+  line-height: 1.5;
+}

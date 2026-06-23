@@ -1,0 +1,474 @@
+# Plan: Add Embedding and Rerank Endpoint Support
+
+## Goal
+
+Extend the existing LLM health monitor so it can also monitor OpenAI-compatible
+`/embeddings` and `/rerank` endpoints, while reusing the current config schema,
+database tables, checker loop, alert logic, and dashboard as much as possible.
+
+## Design principles
+
+1. Reuse existing tables (`endpoints`, `checks`, `alerts`) and DB helpers.
+2. Keep per-endpoint config overrides named the same as today (`prompt_request`,
+   `prompt_expected`, `timeout_seconds`, `interval_seconds`, `random_prefix`,
+   `concurrency`, etc.). Add type-specific fields only where the request/response
+   shape genuinely differs.
+3. Make the change backward-compatible at the code level, but require explicit
+   `endpoint_type` in `config.yaml` for clarity.
+4. Treat embedding/rerank checks exactly like LLM checks: one request = one row
+   in `checks`, independent concurrent tasks when `concurrency > 1`, same alert
+   and uptime logic.
+
+## 1. Config schema changes (`config.py`)
+
+### 1.1 Add endpoint type
+
+Add a typed `endpoint_type` field to `EndpointConfig`:
+
+```python
+from typing import Literal
+
+class EndpointConfig(BaseModel):
+    monitor_id: str = Field(..., alias="monitor-id")
+    name: str
+    base_url: str = Field(..., alias="base_url")
+    api_key: Optional[str] = ""
+    model: str
+    enabled: bool = True
+    show: bool = True
+    endpoint_type: Literal["llm", "embedding", "rerank"]
+    check_override: Optional[CheckOverride] = Field(default=None, alias="check_override")
+```
+
+Rationale: the checker needs to know which path and validator to use. Every
+endpoint in `config.yaml` must explicitly declare its type, e.g.
+`endpoint_type: llm`, so the dashboard and logs are unambiguous.
+
+### 1.2 Nest defaults under `check`
+
+Restructure `config.yaml` so the global `check:` block contains three
+subsections: `llm`, `embedding`, `rerank`. The existing LLM defaults move under
+`check.llm:`.
+
+```yaml
+check:
+  llm:
+    prompt_request: "Say 'hello world' in two words"
+    prompt_expected: "hello world"
+    temperature: 0
+    top_p: 1.0
+    top_k: 0
+    max_tokens: 10
+    assert_response: false
+    timeout_seconds: 10
+    interval_seconds: 30
+    random_prefix: true
+    concurrency: 1
+
+  embedding:
+    input: "Hello world"
+    expected_dimension: 1536        # optional; null = skip dimension check
+    assert_response: false          # for embedding we validate shape, not text
+    timeout_seconds: 10
+    interval_seconds: 30
+    random_prefix: false            # irrelevant for embeddings; keep for consistency
+    concurrency: 1
+
+  rerank:
+    query: "What is the capital of France?"
+    documents:
+      - "Paris is the capital of France."
+      - "Berlin is the capital of Germany."
+      - "France is a country in Europe."
+    expected_index: 0               # optional; null = skip index check
+    assert_response: false
+    timeout_seconds: 10
+    interval_seconds: 30
+    random_prefix: false
+    concurrency: 1
+```
+
+Add matching Pydantic models and wrap them in `CheckConfig`:
+
+```python
+class LlmConfig(BaseModel):
+    prompt_request: str
+    prompt_expected: str
+    temperature: float = 0
+    top_p: float = 1.0
+    top_k: int = 0
+    max_tokens: int = 10
+    assert_response: bool = True
+    timeout_seconds: int = 10
+    interval_seconds: int = 30
+    random_prefix: bool = False
+    concurrency: int = 1
+
+
+class EmbeddingConfig(BaseModel):
+    input: str = "Hello world"
+    expected_dimension: Optional[int] = None
+    assert_response: bool = False
+    timeout_seconds: int = 10
+    interval_seconds: int = 30
+    random_prefix: bool = False
+    concurrency: int = 1
+
+
+class RerankConfig(BaseModel):
+    query: str = "What is the capital of France?"
+    documents: list[str] = Field(default_factory=list)
+    expected_index: Optional[int] = None
+    assert_response: bool = False
+    timeout_seconds: int = 10
+    interval_seconds: int = 30
+    random_prefix: bool = False
+    concurrency: int = 1
+
+
+class CheckConfig(BaseModel):
+    """Container for global defaults of all endpoint types."""
+    llm: LlmConfig
+    embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
+    rerank: RerankConfig = Field(default_factory=RerankConfig)
+```
+
+### 1.3 Extend `CheckOverride`
+
+Add the type-specific optional overrides while keeping the generic names:
+
+```python
+class CheckOverride(BaseModel):
+    # existing LLM/shared fields ...
+    input: Optional[str] = None
+    expected_dimension: Optional[int] = None
+    query: Optional[str] = None
+    documents: Optional[list[str]] = None
+    expected_index: Optional[int] = None
+```
+
+The override key names stay the same across endpoint types; only the relevant
+keys are read by each checker branch.
+
+### 1.4 Type-aware effective config
+
+`EndpointConfig.effective()` should resolve overrides against the subsection that
+matches `endpoint_type`:
+
+```python
+def effective(self, defaults: "CheckConfig") -> dict:
+    type_defaults = getattr(defaults, self.endpoint_type)
+    ov = self.check_override
+
+    def _ov(key: str, fallback):
+        if ov is None:
+            return fallback
+        val = getattr(ov, key)
+        return val if val is not None else fallback
+
+    common = {
+        "assert_response": _ov("assert_response", type_defaults.assert_response),
+        "timeout_seconds": _ov("timeout_seconds", type_defaults.timeout_seconds),
+        "interval_seconds": _ov("interval_seconds", type_defaults.interval_seconds),
+        "random_prefix": _ov("random_prefix", type_defaults.random_prefix),
+        "concurrency": _ov("concurrency", type_defaults.concurrency),
+    }
+
+    if self.endpoint_type == "embedding":
+        return {
+            "input": _ov("input", type_defaults.input),
+            "expected_dimension": _ov("expected_dimension", type_defaults.expected_dimension),
+            **common,
+        }
+
+    if self.endpoint_type == "rerank":
+        return {
+            "query": _ov("query", type_defaults.query),
+            "documents": _ov("documents", type_defaults.documents),
+            "expected_index": _ov("expected_index", type_defaults.expected_index),
+            **common,
+        }
+
+    # LLM
+    return {
+        "prompt_request": _ov("prompt_request", type_defaults.prompt_request),
+        "prompt_expected": _ov("prompt_expected", type_defaults.prompt_expected),
+        "temperature": _ov("temperature", type_defaults.temperature),
+        "top_p": _ov("top_p", type_defaults.top_p),
+        "top_k": _ov("top_k", type_defaults.top_k),
+        "max_tokens": _ov("max_tokens", type_defaults.max_tokens),
+        **common,
+    }
+```
+
+### 1.5 Root config
+
+`AppConfig` keeps `check: CheckConfig`; no separate top-level `embedding:` or
+`rerank:` sections.
+
+```python
+class AppConfig(BaseModel):
+    endpoints: list[EndpointConfig]
+    check: CheckConfig
+    server: ServerConfig = Field(default_factory=ServerConfig)
+    alerts: AlertsConfig = Field(default_factory=AlertsConfig)
+```
+
+## 2. Database changes (`db.py`)
+
+No new tables. Add one column to `endpoints` so the DB can also carry the type
+for API consumers and future migrations:
+
+```sql
+ALTER TABLE endpoints ADD COLUMN endpoint_type TEXT DEFAULT 'llm';
+```
+
+Update `init_db()` migrations list and `upsert_endpoint()` / `get_enabled_endpoints()`
+to include `endpoint_type`. The `checks` table stays unchanged: it already stores
+`status`, `latency_ms`, `response_text`, `request_body`, `response_body`, and
+`alert_triggered`, which is enough for all three endpoint types.
+
+Why reuse `checks`? All endpoint types produce the same outcome metrics: latency,
+success/failure, a short summary, and raw bodies. The only difference is how the
+request is built and how the response is validated.
+
+## 3. Checker changes (`checker.py`)
+
+### 3.1 Load new defaults
+
+```python
+_LLM_CFG = _CONFIG.check.llm
+_EMBEDDING_CFG = _CONFIG.check.embedding
+_RERANK_CFG = _CONFIG.check.rerank
+```
+
+### 3.2 Per-type payload builders
+
+Keep `_build_payload()` for LLM. Add two helpers:
+
+```python
+def _build_embedding_payload(endpoint) -> dict[str, Any]:
+    input_text = _resolve_param(endpoint, "input", _EMBEDDING_CFG.input)
+    random_prefix = _resolve_param(endpoint, "random_prefix", _EMBEDDING_CFG.random_prefix)
+    if random_prefix:
+        input_text = f"trace-id: {uuid.uuid4()}\n{input_text}"
+    return {
+        "model": endpoint.model,
+        "input": input_text,
+    }
+
+def _build_rerank_payload(endpoint) -> dict[str, Any]:
+    query = _resolve_param(endpoint, "query", _RERANK_CFG.query)
+    documents = _resolve_param(endpoint, "documents", _RERANK_CFG.documents)
+    random_prefix = _resolve_param(endpoint, "random_prefix", _RERANK_CFG.random_prefix)
+    if random_prefix:
+        query = f"trace-id: {uuid.uuid4()}\n{query}"
+    return {
+        "model": endpoint.model,
+        "query": query,
+        "documents": documents,
+    }
+```
+
+### 3.3 Per-type URL
+
+In `_check_one()`, read `endpoint_type` from the DB row and branch:
+
+```python
+endpoint_type = endpoint.get("endpoint_type", "llm")
+
+if endpoint_type == "embedding":
+    url = f"{base_url}/embeddings"
+    payload = _build_embedding_payload(cfg_ep)
+elif endpoint_type == "rerank":
+    url = f"{base_url}/rerank"
+    payload = _build_rerank_payload(cfg_ep)
+else:
+    url = f"{base_url}/chat/completions"
+    payload = _build_payload(cfg_ep)
+```
+
+### 3.4 Per-type response validation
+
+After the HTTP call, branch on `endpoint_type` to validate the response shape:
+
+**Embedding**
+
+```python
+expected_dim = _resolve_param(cfg_ep, "expected_dimension", _EMBEDDING_CFG.expected_dimension)
+assert_response = _resolve_param(cfg_ep, "assert_response", _EMBEDDING_CFG.assert_response)
+data = resp.json()
+embeddings = data.get("data", [])
+if not embeddings:
+    status = "error"
+    response_text = "no embeddings in response"
+elif assert_response and expected_dim is not None:
+    emb = embeddings[0].get("embedding", [])
+    if len(emb) != expected_dim:
+        status = "unexpected"
+        response_text = f"expected dimension {expected_dim}, got {len(emb)}"
+    else:
+        response_text = f"embedding dimension {len(emb)}"
+else:
+    response_text = f"embedding dimension {len(embeddings[0].get('embedding', []))}"
+```
+
+**Rerank**
+
+```python
+expected_idx = _resolve_param(cfg_ep, "expected_index", _RERANK_CFG.expected_index)
+assert_response = _resolve_param(cfg_ep, "assert_response", _RERANK_CFG.assert_response)
+data = resp.json()
+results = data.get("results", [])
+if not results:
+    status = "error"
+    response_text = "no rerank results in response"
+elif assert_response and expected_idx is not None:
+    top_idx = results[0].get("index")
+    if top_idx != expected_idx:
+        status = "unexpected"
+        response_text = f"expected top index {expected_idx}, got {top_idx}"
+    else:
+        response_text = f"top rerank index {top_idx}"
+else:
+    response_text = f"top rerank index {results[0].get('index')}"
+```
+
+**LLM** stays exactly as today.
+
+### 3.5 Alert handling
+
+Reuse the existing alert flow unchanged. `trigger_alert()` already enriches the
+message with 1h/24h success rates, which is equally useful for embedding and
+rerank failures.
+
+### 3.6 `_sync_endpoints()`
+
+Pass `endpoint_type=ep.endpoint_type` to `db.upsert_endpoint()`.
+
+## 4. Web UI / API changes (`app.py` and frontend)
+
+### 4.1 API
+
+Expose `endpoint_type` in `/api/status` and `/api/logs`:
+
+```python
+result.append({
+    "monitor_id": mid,
+    "name": ep["name"],
+    "endpoint_type": ep.get("endpoint_type", "llm"),
+    "model": ep["model"],
+    ...
+})
+```
+
+### 4.2 Frontend
+
+In `templates/dashboard.html`, render a small type badge next to the endpoint
+name, e.g.:
+
+```html
+<span class="badge" style="font-size:0.65rem;background:rgba(139,148,158,0.15);color:#8b949e;">
+  ${ep.endpoint_type.toUpperCase()}
+</span>
+```
+
+Also update the connection tooltip (`buildConnTip`) to include:
+
+```
+endpoint_type: ${ep.endpoint_type}
+```
+
+For non-LLM endpoints, only show the effective config keys that apply to that
+type (the `effective` dict returned by `EndpointConfig.effective()` will already
+contain the right keys).
+
+## 5. Example config
+
+All existing endpoints must explicitly set `endpoint_type: llm`:
+
+```yaml
+endpoints:
+  - monitor-id: "suanli-qwen3.6-abliterated"
+    name: "Qwen3.6 Abliterated"
+    base_url: "http://10.10.11.225:8080/v1"
+    model: "unsloth/Kimi-K2.5-GGUF"
+    endpoint_type: llm
+    enabled: true
+    show: true
+    check_override:
+      prompt_request: "Say hello in one word"
+      prompt_expected: "hello"
+      assert_response: false
+
+  - monitor-id: "embedding-proxy"
+    name: "Embedding Proxy"
+    base_url: "http://localhost:4000/v1"
+    model: "text-embedding-3-small"
+    endpoint_type: embedding
+    check_override:
+      expected_dimension: 1536
+
+  - monitor-id: "rerank-proxy"
+    name: "Rerank Proxy"
+    base_url: "http://localhost:4000/v1"
+    model: "rerank-english-v3.0"
+    endpoint_type: rerank
+    check_override:
+      query: "What is the capital of France?"
+      documents:
+        - "Paris is the capital of France."
+        - "Berlin is the capital of Germany."
+      expected_index: 0
+```
+
+## 6. Open questions / options
+
+1. **Embedding validation style**
+   - Option A (recommended): validate `expected_dimension` if provided.
+   - Option B: compute MD5 of the response body and compare against a stored
+     expected hash. This is brittle if the provider returns tiny formatting
+     differences.
+   - Suggested default: `assert_response: false` for embedding, with optional
+     dimension validation.
+
+2. **Rerank validation style**
+   - Option A (recommended): validate `expected_index` (which document should be
+     ranked first).
+   - Option B: MD5 of response body (brittle).
+   - Suggested default: `assert_response: false` for rerank, with optional
+     `expected_index` validation.
+
+3. **Random prefix for embedding/rerank**
+   - Keep the option for consistency, but default to `false`. For embeddings,
+     prepending a UUID changes the semantic input and may produce a different
+     vector, which is usually not desired for health checks.
+
+## 7. Files to modify
+
+- `config.py` — add `endpoint_type`, `LlmConfig`, `EmbeddingConfig`, `RerankConfig`,
+  nest them under `CheckConfig`, extend `CheckOverride`, make `effective()`
+  type-aware.
+- `db.py` — add `endpoint_type` column migration and include it in upsert/select.
+- `checker.py` — branch by `endpoint_type` for URL, payload, and validation; load
+  defaults from `_CONFIG.check.llm`, `_CONFIG.check.embedding`,
+  `_CONFIG.check.rerank`.
+- `app.py` — expose `endpoint_type` in JSON APIs.
+- `templates/dashboard.html` — render endpoint type badge and include it in the
+  tooltip.
+- `config.yaml` — restructure `check:` into `check.llm:`, `check.embedding:`,
+  `check.rerank:`; add `endpoint_type: llm` to every existing endpoint.
+
+## 8. Verification checklist
+
+1. `config.yaml` validates with `load_config()` after restructuring.
+2. All existing endpoints explicitly declare `endpoint_type: llm`.
+3. Existing LLM endpoints behave exactly as before.
+4. New embedding endpoint checks `/embeddings`, stores one check row per cycle,
+   and reports correct status/latency.
+5. New rerank endpoint checks `/rerank`, stores one check row per cycle.
+6. `expected_dimension` and `expected_index` overrides work and trigger
+   `unexpected` status when violated.
+7. Alert messages still include 1h/24h success rates for all endpoint types.
+8. Dashboard `/api/status` returns `endpoint_type` and the frontend renders a
+   type badge for each endpoint.

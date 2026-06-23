@@ -1,0 +1,15 @@
+monitor time series of llm response status
+
+set temperature as zero, with a fixed prompt "IF YOU ARE ALIVE, PLEASE RESPOND OK", check response. let's assert the response to be OK, within x seconds.
+
+create some empty alert function, when llm does not respond within x seconds. 
+
+llm should be standard openai completion api.
+
+use pinned python version and library versions.
+
+create config.yaml for reading assertions, time limits, request prompt and respond prompt.
+
+with a web interface to monitor each endpoint status, history data (uptime) and alert status.
+
+store the data in local sqlite db.

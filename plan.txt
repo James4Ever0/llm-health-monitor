@@ -1,0 +1,109 @@
+# LLM Health Monitor — Implementation Plan
+
+## 1. Project Structure
+
+```
+llm_dashboard/
+├── config.yaml          # User-editable thresholds, prompts, endpoints
+├── requirements.txt     # Pinned Python + library versions
+├── db.py                # SQLite schema + data access layer
+├── checker.py           # Background polling logic (OpenAI completion API)
+├── alerts.py            # Alert hook scaffolding (empty functions to fill in)
+├── app.py               # FastAPI async web server + dashboard routes
+├── templates/
+│   └── dashboard.html   # Web UI: status table, uptime chart, alert log
+└── static/
+    └── style.css        # Minimal styling
+```
+
+---
+
+## 2. Core Components
+
+### 2.1 Configuration (`config.yaml`)
+- `llm.endpoints` — list of base URLs + API keys (supports multiple endpoints)
+- `check.prompt_request` — `"IF YOU ARE ALIVE, PLEASE RESPOND OK"`
+- `check.prompt_expected` — `"OK"`
+- `check.temperature` — `0`
+- `check.timeout_seconds` — `10`
+- `check.interval_seconds` — `30`
+- `alerts.enabled` — `false` (placeholder)
+
+### 2.2 Database (`db.py` — SQLite via `aiosqlite`)
+**Schema:**
+- `endpoints` — id, name, base_url, api_key, is_active
+- `checks` — id, endpoint_id, timestamp, latency_ms, status (ok / timeout / error / unexpected), response_text, alert_triggered
+- `alerts` — id, check_id, alert_type, sent_at, resolved_at
+
+**All DB I/O is async** through `aiosqlite` so the event loop never blocks on disk writes.
+
+**Queries needed:**
+- Insert check result
+- Fetch latest N checks per endpoint
+- Compute uptime % over window (last 1h / 24h / 7d)
+- List unresolved alerts
+
+### 2.3 Health Checker (`checker.py`)
+- Runs as an `asyncio` background task inside the same event loop as FastAPI
+- **All endpoints are checked concurrently** via `asyncio.gather` — a slow API never blocks the others
+- Per-endpoint flow:
+  1. Build raw JSON payload (`model`, `messages`, `temperature=0`, etc.)
+  2. `httpx.AsyncClient.post()` to `{base_url}/v1/chat/completions` with custom headers / API key + `timeout`
+  3. Measure wall-clock latency
+  4. Parse response JSON and extract `choices[0].message.content`
+  5. Assert content == expected prompt
+  6. If latency > timeout OR content mismatch OR request exception → mark fail
+  7. `await` async DB insert via `aiosqlite`
+  8. If fail → `await` alert hook
+- `await asyncio.sleep(interval_seconds)` and repeat
+
+### 2.4 Alerts (`alerts.py`)
+- `trigger_alert(check_result)` — called on any failure; currently logs to console/SQLite only
+- `resolve_alert(endpoint_id)` — called when endpoint recovers
+- Empty stubs for:
+  - `send_email_alert(...)`
+  - `send_slack_alert(...)`
+  - `send_pagerduty_alert(...)`
+
+### 2.5 Web Dashboard (`app.py` + `templates/dashboard.html`)
+**Routes:**
+- `GET /` — Dashboard UI
+- `GET /api/status` — Current status of all endpoints (latest check, uptime %)
+- `GET /api/history?endpoint_id=X&hours=24` — Time-series data for charting
+- `GET /api/alerts` — Active / recent alerts
+
+**UI Elements:**
+- Status table: endpoint name, last check time, latency, pass/fail badge
+- Uptime charts: 1h / 24h / 7d uptime percentage per endpoint
+- Alert panel: list of active alerts with timestamp
+- Auto-refresh every 5 seconds
+
+---
+
+## 3. Tech Stack (Pinned Versions)
+
+- Python `3.12.3`
+- `fastapi==0.111.0` + `uvicorn==0.30.0`
+- `pyyaml==6.0.1`
+- `httpx==0.27.0` — async HTTP client (replaces `requests`)
+- `aiosqlite==0.20.0` — async SQLite wrapper
+- *(No `openai` SDK — we use `httpx` directly to stay compatible with arbitrary OpenAI-compatible endpoints and custom model names.)*
+
+---
+
+## 4. Milestones
+
+1. **Bootstrap** — `requirements.txt`, `config.yaml`, `db.py` schema
+2. **Poller** — `checker.py` running standalone, writing to DB
+3. **Alerts scaffold** — `alerts.py` with empty hooks wired in
+4. **Web UI** — Flask app serving dashboard with live data
+5. **Polish** — Charts (Chart.js via CDN), auto-refresh, uptime calculations
+
+---
+
+## 5. Open Questions / Notes
+
+- FastAPI + `asyncio.gather` for fully concurrent endpoint checks
+- `aiosqlite` for non-blocking DB writes
+- Alert deduplication: suppress repeated alerts until resolved?
+- Retention policy for `checks` table to prevent unbounded DB growth?

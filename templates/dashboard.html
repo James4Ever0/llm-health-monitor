@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LLM Health Monitor</title>
+  <link rel="stylesheet" href="/static/style.css?v=2">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>LLM Health Monitor</h1>
+      <span class="last-updated" id="last-updated">Loading...</span>
+    </header>
+
+    <nav>
+      <a href="/" class="active">Dashboard</a>
+      <a href="/alerts">Alerts</a>
+      <a href="/logs">Logs</a>
+    </nav>
+
+    <!-- Status Table -->
+    <div class="card">
+      <div class="card-header">
+        <h2>Endpoint Status</h2>
+        <span class="summary" id="status-summary"></span>
+      </div>
+      <div id="status-container">
+        <div class="empty-state">Loading endpoints...</div>
+      </div>
+    </div>
+
+    <!-- Charts -->
+    <div class="card">
+      <h2>Latency History (Last 24h)</h2>
+      <div id="charts-container" class="chart-container"></div>
+    </div>
+  </div>
+
+  <script>
+    // Timezone offset from server config (e.g. +8)
+    const TZ_OFFSET = {{ tz_offset | tojson }};
+
+    // ------------------------------------------------------------------
+    // Utilities
+    // ------------------------------------------------------------------
+    function formatDate(iso) {
+      if (!iso) return '—';
+      // SQLite returns 'YYYY-MM-DD HH:MM:SS' (naive UTC). Parse as UTC, apply offset.
+      const utc = iso.replace(' ', 'T') + 'Z';
+      const d = new Date(utc);
+      const shifted = new Date(d.getTime() + TZ_OFFSET * 3600000);
+      const yyyy = shifted.getUTCFullYear();
+      const mm = String(shifted.getUTCMonth() + 1).padStart(2, '0');
+      const dd = String(shifted.getUTCDate()).padStart(2, '0');
+      const hh = String(shifted.getUTCHours()).padStart(2, '0');
+      const min = String(shifted.getUTCMinutes()).padStart(2, '0');
+      const ss = String(shifted.getUTCSeconds()).padStart(2, '0');
+      return `${yyyy}/${mm}/${dd} ${hh}:${min}:${ss}`;
+    }
+
+    function formatLatency(ms) {
+      if (ms === null || ms === undefined) return '—';
+      return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`;
+    }
+
+    function uptimeColor(pct) {
+      if (pct === null || pct === undefined) return '';
+      if (pct >= 99) return 'ok';
+      if (pct >= 95) return 'medium';
+      return 'low';
+    }
+
+    function renderUptime(val) {
+      if (val === null || val === undefined) {
+        return `<div class="uptime-bar">
+                  <span class="uptime-value" style="color:var(--text-muted)">—</span>
+                </div>`;
+      }
+      return `<div class="uptime-bar">
+                <div class="bar-track"><div class="bar-fill ${uptimeColor(val)}" style="width:${val}%"></div></div>
+                <span class="uptime-value">${val}%</span>
+              </div>`;
+    }
+
+    // ------------------------------------------------------------------
+    // Status Table
+    // ------------------------------------------------------------------
+    async function loadStatus() {
+      const res = await fetch('/api/status');
+      const data = await res.json();
+      const container = document.getElementById('status-container');
+
+      if (!data.endpoints || data.endpoints.length === 0) {
+        container.innerHTML = '<div class="empty-state">No endpoints configured.</div>';
+        document.getElementById('status-summary').textContent = '';
+        return;
+      }
+
+      // Summary: up / down counts based on latest check status
+      const up = data.endpoints.filter(ep => (ep.latest || {}).status === 'ok').length;
+      const down = data.endpoints.length - up;
+      document.getElementById('status-summary').innerHTML =
+        `up: <span style="color:var(--ok)">${up}</span> / down: <span style="color:var(--fail)">${down}</span>`;
+
+      function maskKey(key) {
+        if (!key) return '(no key)';
+        if (key.length <= 8) return '***';
+        return key.slice(0,4) + '****' + key.slice(-4);
+      }
+
+      function buildConnTip(ep) {
+        const eff = ep.effective || {};
+        const lines = [
+          `monitor-id: ${ep.monitor_id}`,
+          `endpoint_type: ${ep.endpoint_type || 'llm'}`,
+          `url: ${ep.base_url}`,
+          `model: ${ep.model}`,
+          `api_key: ${maskKey(ep.api_key)}`,
+          '',
+          'effective config:',
+        ];
+        const type = ep.endpoint_type || 'llm';
+        if (type === 'embedding') {
+          lines.push(`  input = ${eff.input}`);
+          lines.push(`  expected_dimension = ${eff.expected_dimension}`);
+        } else if (type === 'rerank') {
+          lines.push(`  query = ${eff.query}`);
+          lines.push(`  documents = ${(eff.documents || []).length} entries`);
+          lines.push(`  expected_index = ${eff.expected_index}`);
+        } else {
+          lines.push(`  prompt_request = ${eff.prompt_request}`);
+          lines.push(`  prompt_expected = ${eff.prompt_expected}`);
+          lines.push(`  temperature = ${eff.temperature}`);
+          lines.push(`  top_p = ${eff.top_p}`);
+          lines.push(`  top_k = ${eff.top_k}`);
+          lines.push(`  max_tokens = ${eff.max_tokens}`);
+        }
+        lines.push(`  assert_response = ${eff.assert_response}`);
+        lines.push(`  timeout_seconds = ${eff.timeout_seconds}`);
+        lines.push(`  interval_seconds = ${eff.interval_seconds}`);
+        return lines.join('\n');
+      }
+
+      const rows = data.endpoints.map(ep => {
+        const latest = ep.latest || {};
+        const status = latest.status || 'unknown';
+        const badgeClass = status === 'ok' ? 'ok' : 'fail';
+        const latencyClass = latest.latency_ms > 5000 ? 'slow' : '';
+        const ov = ep.check_override || {};
+        const hasOverrides = Object.keys(ov).length > 0;
+        const eff = ep.effective || {};
+        const overrideTip = hasOverrides
+          ? Object.entries(ov).map(([k,v]) => {
+              const s = String(v);
+              const disp = s.length > 30 ? s.slice(0,30) + '...' : s;
+              return `${k}=${disp}`;
+            }).join(', ')
+          : '';
+        const overrideBadge = hasOverrides
+          ? `<span class="badge warn" style="font-size:0.65rem;cursor:help;" title="${escapeHtml(overrideTip)}">OVERRIDE</span>`
+          : '';
+        const assertOff = eff.assert_response === false
+          ? `<span class="badge" style="font-size:0.65rem;background:rgba(88,166,255,0.15);color:#58a6ff;" title="Response content not validated">NO-ASSERT</span>`
+          : '';
+        const typeBadge = `<span class="badge" style="font-size:0.65rem;background:rgba(139,148,158,0.15);color:#8b949e;" title="Endpoint type">${(ep.endpoint_type || 'llm').toUpperCase()}</span>`;
+        const connTip = escapeHtml(buildConnTip(ep));
+        return `
+          <tr>
+            <td>
+              <div style="display:flex;flex-wrap:wrap;align-items:center;gap:0.35rem;">
+                <strong>${escapeHtml(ep.name)}</strong>
+                ${typeBadge}
+                ${overrideBadge}
+                ${assertOff}
+              </div>
+              <small style="color:var(--text-muted);cursor:help;" title="${connTip}">${escapeHtml(ep.model)}</small>
+            </td>
+            <td><span class="badge ${badgeClass}">${status}</span></td>
+            <td class="latency ${latencyClass}">${formatLatency(latest.latency_ms)}</td>
+            <td>${formatDate(latest.timestamp)}</td>
+            <td>${renderUptime(ep.uptime['1h'])}</td>
+            <td>${renderUptime(ep.uptime['24h'])}</td>
+            <td>${renderUptime(ep.uptime['7d'])}</td>
+          </tr>
+        `;
+      }).join('');
+
+      container.innerHTML = `
+        <table class="status-table">
+          <thead>
+            <tr>
+              <th>Endpoint</th>
+              <th>Status</th>
+              <th>Latency</th>
+              <th>Last Check</th>
+              <th>Uptime 1h</th>
+              <th>Uptime 24h</th>
+              <th>Uptime 7d</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    }
+
+    // ------------------------------------------------------------------
+    // Charts
+    // ------------------------------------------------------------------
+    let charts = {};
+
+    async function loadCharts() {
+      const statusRes = await fetch('/api/status');
+      const statusData = await statusRes.json();
+      const container = document.getElementById('charts-container');
+
+      if (!statusData.endpoints || statusData.endpoints.length === 0) {
+        container.innerHTML = '<div class="empty-state">No data yet.</div>';
+        return;
+      }
+
+      // We'll show one chart per endpoint, stacked vertically
+      let html = '';
+      for (const ep of statusData.endpoints) {
+        html += `<div style="margin-bottom:1.5rem;"><strong style="font-size:0.85rem;color:var(--text-muted)">${escapeHtml(ep.name)}</strong><div style="height:180px;margin-top:0.5rem;"><canvas id="chart-${ep.monitor_id}"></canvas></div></div>`;
+      }
+      container.innerHTML = html;
+
+      for (const ep of statusData.endpoints) {
+        const historyRes = await fetch(`/api/history?monitor_id=${encodeURIComponent(ep.monitor_id)}&hours=24`);
+        const historyData = await historyRes.json();
+        const checks = historyData.checks || [];
+
+        const labels = checks.map(c => {
+          const utc = (c.timestamp || '').replace(' ', 'T') + 'Z';
+          const d = new Date(utc);
+          const shifted = new Date(d.getTime() + TZ_OFFSET * 3600000);
+          const hh = String(shifted.getUTCHours()).padStart(2, '0');
+          const min = String(shifted.getUTCMinutes()).padStart(2, '0');
+          return `${hh}:${min}`;
+        });
+        const latencies = checks.map(c => c.latency_ms || 0);
+        const colors = checks.map(c => c.status === 'ok' ? '#3fb950' : '#f85149');
+
+        const ctx = document.getElementById(`chart-${ep.monitor_id}`);
+        if (!ctx) continue;
+
+        if (charts[ep.monitor_id]) {
+          charts[ep.monitor_id].destroy();
+        }
+
+        charts[ep.monitor_id] = new Chart(ctx, {
+          type: 'bar',
+          data: {
+            labels,
+            datasets: [{
+              label: 'Latency (ms)',
+              data: latencies,
+              backgroundColor: colors,
+              borderRadius: 2,
+              barThickness: 3,
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: { display: false },
+              tooltip: {
+                callbacks: {
+                  afterLabel: (ctx) => {
+                    const check = checks[ctx.dataIndex];
+                    return `Status: ${check.status}\nResponse: ${(check.response_text || '').slice(0, 40)}`;
+                  }
+                }
+              }
+            },
+            scales: {
+              x: {
+                display: false,
+                grid: { display: false },
+              },
+              y: {
+                grid: { color: '#30363d' },
+                ticks: { color: '#8b949e', font: { size: 10 } },
+                beginAtZero: true,
+              }
+            },
+            animation: false,
+          }
+        });
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // Helpers
+    // ------------------------------------------------------------------
+    function escapeHtml(str) {
+      if (!str) return '';
+      return str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    async function refreshAll() {
+      try {
+        await loadStatus();
+        await loadCharts();
+        const now = new Date();
+        const shifted = new Date(now.getTime() + TZ_OFFSET * 3600000);
+        const hh = String(shifted.getUTCHours()).padStart(2, '0');
+        const min = String(shifted.getUTCMinutes()).padStart(2, '0');
+        const ss = String(shifted.getUTCSeconds()).padStart(2, '0');
+        document.getElementById('last-updated').textContent = `Updated: ${hh}:${min}:${ss}`;
+      } catch (err) {
+        console.error('Refresh failed:', err);
+        document.getElementById('last-updated').textContent = 'Refresh failed';
+      }
+    }
+
+    // Initial load + auto-refresh every 5 seconds
+    refreshAll();
+    setInterval(refreshAll, 5000);
+  </script>
+</body>
+</html>
