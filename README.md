@@ -1,5 +1,7 @@
 # LLM Health Monitor
 
+![Image](mmexport1782709918855.png)
+
 A small FastAPI-based dashboard and async health checker for LLM, embedding, and rerank endpoints.
 
 It polls each configured endpoint on its own schedule, records latency and response correctness to a local SQLite database, and renders a live web UI with status tables, per-endpoint latency charts, active alerts, and a debug request/response log.
